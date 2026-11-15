@@ -4,6 +4,7 @@ Lets you rotate and zoom SOLIDWORKS models with a laptop touchpad.
 
 ## Gestures
 - **Rotate:** tap and hold with two fingers, then drag. Lift to stop.
+- **Pan:** hold **Ctrl** and do the same tap and hold, then drag. The model moves with your fingers without rotating or changing zoom, like Ctrl + middle-mouse drag.
 - **Zoom:** two-finger scroll or pinch. It zooms toward the cursor, replacing the original touchpad zoom that zoomed around the center of the screen.
 - A plain two-finger tap still right-clicks (about 0.3 s later than usual).
 - Works in parts and assemblies. A mouse wheel and one-finger drag behave as normal.
@@ -24,6 +25,7 @@ Settings are in the registry under `HKCU\Software\TouchpadOrbit`. Restart SOLIDW
 | Value | Default | Meaning |
 |---|---|---|
 | RotateSpeed | 1.0 | Rotation speed multiplier |
+| PanSpeed | 1.0 | Pan speed multiplier (1.0 = a full pad-width swipe moves the model one view width) |
 | InvertHorizontal / InvertVertical | 0 | Set to 1 to flip a rotation direction |
 | TapMs | 250 | Longest the first two-finger tap can last (ms) |
 | GapMs | 350 | Longest gap allowed between the tap and putting the fingers back down (ms) |

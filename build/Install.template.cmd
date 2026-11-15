@@ -40,6 +40,6 @@ try {
     & $regasm /codebase "$dest\TouchpadOrbit.dll" /silent
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed.' }
     Write-Host "`nTouchpad Orbit installed. Restart SOLIDWORKS." -ForegroundColor Green
-    Write-Host 'Rotate: tap and hold with two fingers, then drag.'
+    Write-Host 'Rotate: tap and hold with two fingers, then drag. Hold Ctrl to pan.'
 } catch { Write-Host "`nInstall failed: $_" -ForegroundColor Red }
 Read-Host 'Press Enter to close'

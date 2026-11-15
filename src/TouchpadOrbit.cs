@@ -1,6 +1,7 @@
 // Touchpad Orbit - SOLIDWORKS add-in for touchpad navigation
 // https://github.com/OmriStein/Solidworks-TouchpadOrbit   (MIT License)
 //  * Two-finger tap and hold, then drag -> rotate (like middle-mouse drag)
+//  * Same with Ctrl held -> pan (like Ctrl + middle-mouse drag)
 //    (a plain two-finger tap still right-clicks, just ~0.3 s later)
 //  * Two-finger scroll / pinch -> zoom toward the cursor
 // Settings: HKCU\Software\TouchpadOrbit (read when SolidWorks starts)
@@ -19,8 +20,8 @@ using SolidWorks.Interop.swpublished;
 [assembly: AssemblyTitle("Touchpad Orbit for SOLIDWORKS")]
 [assembly: AssemblyProduct("Touchpad Orbit")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Omri Stein - MIT License")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace TouchpadOrbit
 {
@@ -93,6 +94,7 @@ namespace TouchpadOrbit
         public int GapMs = 350;           // max gap between the tap and putting fingers down again
         public double MovePct = 3;        // max movement during the tap (% of pad width)
         public double RotSpeed = 1.0;     // 1.0 = 1.5*PI radians per full pad width
+        public double PanSpeed = 1.0;     // 1.0 = full pad width moves the model one view width
         public bool InvertX, InvertY;
         public bool FixZoom = true;
         public double ZoomSpeed = 1.0;
@@ -109,6 +111,7 @@ namespace TouchpadOrbit
                     c.GapMs = I(k, "GapMs", c.GapMs);
                     c.MovePct = D(k, "MovePercent", c.MovePct);
                     c.RotSpeed = D(k, "RotateSpeed", c.RotSpeed);
+                    c.PanSpeed = D(k, "PanSpeed", c.PanSpeed);
                     c.InvertX = I(k, "InvertHorizontal", 0) != 0;
                     c.InvertY = I(k, "InvertVertical", 0) != 0;
                     c.FixZoom = I(k, "ZoomToCursor", 1) != 0;
@@ -160,6 +163,7 @@ namespace TouchpadOrbit
         long t0, tapEnd, lastTwoFinger = -100000, rotateEnd = -100000;
         bool pendingRClick; long pendingRClickT;
         int zoomAcc; bool zoomCtrl, zoomPosted; int zoomX, zoomY;
+        bool panning;
         double kUnits;
 
         static readonly IntPtr Marker = (IntPtr)0x70A0B17;
@@ -351,11 +355,26 @@ namespace TouchpadOrbit
         {
             if (Math.Abs(accX) < 1e-6 && Math.Abs(accY) < 1e-6) return;
             var v = ActiveView(); if (v == null) { accX = accY = 0; return; }
+            bool pan = (GetAsyncKeyState(0x11) & 0x8000) != 0;   // Ctrl held -> pan instead of rotate
+            if (pan != panning) { panning = pan; Log.W(pan ? "PAN" : "ROTATE"); }
+            if (pan) { Pan(v, accX, accY); accX = accY = 0; return; }
             double k = 1.5 * Math.PI * cfg.RotSpeed;
             double ax = accY * k * (cfg.InvertY ? -1 : 1);   // vertical finger motion -> about screen X
             double ay = accX * k * (cfg.InvertX ? -1 : 1);   // horizontal finger motion -> about screen Y
             accX = accY = 0;
             v.RotateAboutCenter(ax, ay);
+        }
+
+        // Move the view so the model follows the fingers (no rotation, no zoom change).
+        void Pan(ModelView v, double dx, double dy)
+        {
+            RECT rc; GetClientRect((IntPtr)v.GetViewHWnd(), out rc);
+            double w = Math.Max(200, rc.Right - rc.Left);
+            double px = dx * w * cfg.PanSpeed, py = dy * w * cfg.PanSpeed;   // pad-width fraction -> pixels
+            var a = (double[])((MathTransform)v.Transform).ArrayData;
+            double k = a[12] / v.Scale2;                                        // pixels per TranslateBy unit
+            if (k <= 0) return;
+            v.TranslateBy(px / k, -py / k);                                     // screen y is down, view y is up
         }
 
         void ReplayRightClick()
@@ -463,6 +482,7 @@ namespace TouchpadOrbit
         delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
         [StructLayout(LayoutKind.Sequential)] struct RAWINPUTDEVICE { public ushort usUsagePage, usUsage; public uint dwFlags; public IntPtr hwndTarget; }
         [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+        [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
         [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
         [StructLayout(LayoutKind.Explicit)] struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public MOUSEINPUT mi; }
         [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] d, uint n, uint cb);
@@ -477,6 +497,8 @@ namespace TouchpadOrbit
         [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int c, IntPtr w, IntPtr l);
         [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
         [DllImport("user32.dll")] static extern short GetKeyState(int vk);
+        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+        [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll")] static extern uint SendInput(uint n, INPUT[] inputs, int cb);
         [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
