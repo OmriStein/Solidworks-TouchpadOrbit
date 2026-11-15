@@ -1,9 +1,10 @@
 // Touchpad Orbit - SOLIDWORKS add-in for touchpad navigation
 // https://github.com/OmriStein/Solidworks-TouchpadOrbit   (MIT License)
-//  * Two-finger tap and hold, then drag -> rotate (like middle-mouse drag)
-//  * Same with Ctrl held -> pan (like Ctrl + middle-mouse drag)
+//  * Two-finger drag                    -> rotate (like middle-mouse drag)
+//  * Ctrl + two-finger drag             -> pan    (like Ctrl + middle-mouse drag)
+//  * Two-finger tap and hold, then drag -> zoom toward the cursor (drag up = in)
+//  * Pinch                              -> zoom toward the cursor
 //    (a plain two-finger tap still right-clicks, just ~0.3 s later)
-//  * Two-finger scroll / pinch -> zoom toward the cursor
 // Settings: HKCU\Software\TouchpadOrbit (read when SolidWorks starts)
 // Log:      %LOCALAPPDATA%\TouchpadOrbit\log.txt
 using System;
@@ -20,8 +21,8 @@ using SolidWorks.Interop.swpublished;
 [assembly: AssemblyTitle("Touchpad Orbit for SOLIDWORKS")]
 [assembly: AssemblyProduct("Touchpad Orbit")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Omri Stein - MIT License")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace TouchpadOrbit
 {
@@ -92,11 +93,11 @@ namespace TouchpadOrbit
     {
         public int TapMs = 250;           // max length of the first two-finger tap
         public int GapMs = 350;           // max gap between the tap and putting fingers down again
-        public double MovePct = 3;        // max movement during the tap (% of pad width)
+        public double DragPct = 1.5;      // finger movement (% of pad width) that starts rotate/pan
+        public double PinchPct = 4;       // change in finger spread (% of pad width) that starts pinch zoom
         public double RotSpeed = 1.0;     // 1.0 = 1.5*PI radians per full pad width
         public double PanSpeed = 1.0;     // 1.0 = full pad width moves the model one view width
         public bool InvertX, InvertY;
-        public bool FixZoom = true;
         public double ZoomSpeed = 1.0;
         public bool InvertZoom;
         public bool Debug = true;
@@ -109,12 +110,12 @@ namespace TouchpadOrbit
                 {
                     c.TapMs = I(k, "TapMs", c.TapMs);
                     c.GapMs = I(k, "GapMs", c.GapMs);
-                    c.MovePct = D(k, "MovePercent", c.MovePct);
+                    c.DragPct = D(k, "DragStartPercent", c.DragPct);
+                    c.PinchPct = D(k, "PinchStartPercent", c.PinchPct);
                     c.RotSpeed = D(k, "RotateSpeed", c.RotSpeed);
                     c.PanSpeed = D(k, "PanSpeed", c.PanSpeed);
                     c.InvertX = I(k, "InvertHorizontal", 0) != 0;
                     c.InvertY = I(k, "InvertVertical", 0) != 0;
-                    c.FixZoom = I(k, "ZoomToCursor", 1) != 0;
                     c.ZoomSpeed = D(k, "ZoomSpeed", c.ZoomSpeed);
                     c.InvertZoom = I(k, "InvertZoom", 0) != 0;
                     c.Debug = I(k, "Debug", 1) != 0;
@@ -149,39 +150,32 @@ namespace TouchpadOrbit
     // Runs on SolidWorks' UI thread: raw touchpad input + thread mouse hook + direct API calls.
     class Engine : NativeWindow, IDisposable
     {
-        enum Mode { Idle, Touch1, TapWait, Rotate, Passive }
+        enum Mode { Idle, Touch1, TapWait, Drag, Pinch, Zoom, Passive }
 
         readonly SldWorks sw; readonly Cfg cfg;
         readonly Timer timer = new Timer();
         readonly Dictionary<IntPtr, Dev> devs = new Dictionary<IntPtr, Dev>();
         readonly Stopwatch clock = Stopwatch.StartNew();
         IntPtr hook; HookProc hookProc;
-        bool reverseWheel;
 
         Mode mode = Mode.Idle; int fingers, maxFingers;
-        double cx, cy, sx, sy, lx, ly, accX, accY;
-        long t0, tapEnd, lastTwoFinger = -100000, rotateEnd = -100000;
+        double cx, cy, sx, sy, lx, ly, accX, accY;   // centroid, start, last, pending drag (pad-width units)
+        double spread0, lastSpread, accPinch = 1, accZoom;
+        int gx, gy;                                  // cursor (screen) when the gesture started
+        long t0, tapEnd, lastTwoFinger = -100000, gestureEnd = -100000;
         bool pendingRClick; long pendingRClickT;
-        int zoomAcc; bool zoomCtrl, zoomPosted; int zoomX, zoomY;
         bool panning;
         double kUnits;
 
         static readonly IntPtr Marker = (IntPtr)0x70A0B17;
         const int WM_INPUT = 0x00FF, WM_MOUSEWHEEL = 0x020A, WM_MOUSEHWHEEL = 0x020E;
-        const int WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_APP_ZOOM = 0x8000 + 77;
+        const int WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205;
         const int HIDP_OK = 0x00110000;
 
         public Engine(SldWorks sw)
         {
             this.sw = sw;
             cfg = Cfg.Load(); Log.On = cfg.Debug;
-            try
-            {
-                int year = 2000 + int.Parse(sw.RevisionNumber().Split('.')[0]) - 8;
-                using (var k = Registry.CurrentUser.OpenSubKey(@"Software\SolidWorks\SOLIDWORKS " + year + @"\General"))
-                    if (k != null) reverseWheel = Convert.ToInt32(k.GetValue("Reverse Zoom Direction", 0)) != 0;
-            }
-            catch { }
 
             CreateHandle(new CreateParams { Caption = "TouchpadOrbitSink" });
             var rid = new[] { new RAWINPUTDEVICE { usUsagePage = 0x0D, usUsage = 0x05, dwFlags = 0x100, hwndTarget = Handle } };
@@ -191,7 +185,7 @@ namespace TouchpadOrbit
             hook = SetWindowsHookEx(7 /*WH_MOUSE*/, hookProc, IntPtr.Zero, GetCurrentThreadId());
             if (hook == IntPtr.Zero) Log.W("hook failed " + Marshal.GetLastWin32Error());
             timer.Interval = 10; timer.Tick += (s, e) => Tick(); timer.Start();
-            Log.W("engine up, reverseWheel=" + reverseWheel);
+            Log.W("engine up");
         }
 
         public void Dispose()
@@ -210,7 +204,6 @@ namespace TouchpadOrbit
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WM_INPUT) { try { OnInput(m.LParam); } catch (Exception e) { Log.W("input err " + e.Message); } }
-            else if (m.Msg == WM_APP_ZOOM) { zoomPosted = false; try { DoZoom(); } catch (Exception e) { Log.W("zoom err " + e.Message); } return; }
             base.WndProc(ref m);
         }
 
@@ -290,11 +283,17 @@ namespace TouchpadOrbit
             if (d.Seen >= d.Expected) { d.Expected = 0; OnFrame(d.Frame); }
         }
 
-        // ---------------- gesture: two-finger tap, then two-finger hold + drag ----------------
+        // ---------------- gestures ----------------
+        //  two-finger drag -> rotate (Ctrl: pan) | pinch -> zoom | two-finger tap, then hold + drag -> zoom
         void OnFrame(Dictionary<uint, double[]> pts)
         {
-            int n = pts.Count; double x = 0, y = 0;
-            foreach (var p in pts.Values) { x += p[0]; y += p[1]; }
+            int n = pts.Count; double x = 0, y = 0, spread = 0;
+            double[] p0 = null;
+            foreach (var p in pts.Values)
+            {
+                x += p[0]; y += p[1];
+                if (p0 == null) p0 = p; else if (n == 2) spread = Dist(p0[0], p0[1], p[0], p[1]);
+            }
             if (n > 0) { x /= n; y /= n; }
             if (n != fingers) Log.W("fingers " + fingers + "->" + n + " (" + mode + ")");
             fingers = n; cx = x; cy = y;
@@ -303,26 +302,48 @@ namespace TouchpadOrbit
             switch (mode)
             {
                 case Mode.Idle:
-                    if (n == 2) { mode = Mode.Touch1; t0 = Now; sx = x; sy = y; maxFingers = 2; }
+                    if (n == 2)
+                    {
+                        if (!CursorOverView()) { mode = Mode.Passive; break; }   // not over the model: leave scrolling alone
+                        mode = Mode.Touch1; t0 = Now; sx = x; sy = y; spread0 = spread; maxFingers = 2; RememberCursor();
+                    }
                     else if (n > 2) mode = Mode.Passive;
                     break;
 
-                case Mode.Touch1:   // first two-finger contact: is it a short, still tap?
+                case Mode.Touch1:   // two fingers down: drag, pinch, or just a tap?
                     if (n > maxFingers) maxFingers = n;
                     if (maxFingers > 2) { mode = Mode.Passive; break; }
-                    if (n == 2 && Dist(x, y, sx, sy) * 100 > cfg.MovePct) { mode = Mode.Passive; break; }   // normal scroll
-                    if (Now - t0 > cfg.TapMs) { mode = Mode.Passive; break; }                              // too long for a tap
-                    if (n == 0) { mode = Mode.TapWait; tapEnd = Now; Log.W("tap"); }
+                    if (n == 2)
+                    {
+                        double move = Dist(x, y, sx, sy) * 100, spr = Math.Abs(spread - spread0) * 100;
+                        if (spr > cfg.PinchPct && spr > move) { mode = Mode.Pinch; lastSpread = spread; accPinch = 1; Log.W("PINCH start"); }
+                        else if (move > cfg.DragPct) { mode = Mode.Drag; lx = x; ly = y; accX = accY = 0; Log.W("DRAG start"); }
+                    }
+                    else if (n == 0)
+                    {
+                        if (Now - t0 <= cfg.TapMs) { mode = Mode.TapWait; tapEnd = Now; Log.W("tap"); }
+                        else mode = Mode.Idle;
+                    }
                     break;
 
-                case Mode.TapWait:  // waiting for the fingers to come back down
-                    if (n == 2 && CursorOverView()) { mode = Mode.Rotate; lx = x; ly = y; accX = accY = 0; pendingRClick = false; Log.W("ROTATE start"); }
+                case Mode.TapWait:  // after a two-finger tap: fingers back down -> zoom drag
+                    if (n == 2 && CursorOverView()) { mode = Mode.Zoom; ly = y; accZoom = 0; pendingRClick = false; RememberCursor(); Log.W("ZOOM start"); }
                     else if (n > 2) mode = Mode.Passive;
                     break;
 
-                case Mode.Rotate:
-                    if (n != 2) { Flush(); rotateEnd = Now; Log.W("ROTATE end"); mode = n == 0 ? Mode.Idle : Mode.Passive; }
+                case Mode.Drag:
+                    if (n != 2) EndGesture(n);
                     else { accX += x - lx; accY += y - ly; lx = x; ly = y; }
+                    break;
+
+                case Mode.Pinch:
+                    if (n != 2) EndGesture(n);
+                    else { if (lastSpread > 1e-4 && spread > 1e-4) accPinch *= spread / lastSpread; lastSpread = spread; }
+                    break;
+
+                case Mode.Zoom:
+                    if (n != 2) EndGesture(n);
+                    else { accZoom += y - ly; ly = y; }
                     break;
 
                 case Mode.Passive:
@@ -331,6 +352,18 @@ namespace TouchpadOrbit
             }
         }
 
+        void EndGesture(int n)
+        {
+            Flush();
+            Log.W(mode + " end");
+            gestureEnd = Now;
+            mode = n == 0 ? Mode.Idle : Mode.Passive;
+        }
+
+        bool Active { get { return mode == Mode.Touch1 || mode == Mode.TapWait || mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom; } }
+
+        void RememberCursor() { POINT p; GetCursorPos(out p); gx = p.X; gy = p.Y; }
+
         static double Dist(double a, double b, double c, double d) { return Math.Sqrt((a - c) * (a - c) + (b - d) * (b - d)); }
 
         void Tick()
@@ -338,31 +371,48 @@ namespace TouchpadOrbit
             try
             {
                 if (mode == Mode.TapWait && Now - tapEnd > cfg.GapMs && fingers < 2) mode = Mode.Idle;
-                if (mode == Mode.Touch1 && Now - t0 > cfg.TapMs && fingers >= 2) mode = Mode.Passive;
-                if (mode == Mode.Rotate) Flush();
-                // a two-finger tap's right-click was held back; release it if no drag followed
-                if (pendingRClick && mode != Mode.TapWait && mode != Mode.Touch1 && mode != Mode.Rotate && Now - pendingRClickT > 30)
+                if (mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom) Flush();
+                // a two-finger tap's right-click was held back; release it if no zoom drag followed
+                if (pendingRClick && mode != Mode.TapWait && mode != Mode.Touch1 && mode != Mode.Zoom && Now - pendingRClickT > 30)
                 {
                     pendingRClick = false;
-                    if (Now - rotateEnd > 500) ReplayRightClick();
+                    if (Now - gestureEnd > 500) ReplayRightClick();
                 }
-                if (mode != Mode.Idle && fingers < 2 && Now - lastTwoFinger > 1500 && mode != Mode.TapWait) mode = Mode.Idle;
+                if (mode != Mode.Idle && mode != Mode.TapWait && fingers < 2 && Now - lastTwoFinger > 1500) mode = Mode.Idle;
             }
             catch (Exception e) { Log.W("tick err " + e.Message); }
         }
 
         void Flush()
         {
-            if (Math.Abs(accX) < 1e-6 && Math.Abs(accY) < 1e-6) return;
-            var v = ActiveView(); if (v == null) { accX = accY = 0; return; }
-            bool pan = (GetAsyncKeyState(0x11) & 0x8000) != 0;   // Ctrl held -> pan instead of rotate
-            if (pan != panning) { panning = pan; Log.W(pan ? "PAN" : "ROTATE"); }
-            if (pan) { Pan(v, accX, accY); accX = accY = 0; return; }
-            double k = 1.5 * Math.PI * cfg.RotSpeed;
-            double ax = accY * k * (cfg.InvertY ? -1 : 1);   // vertical finger motion -> about screen X
-            double ay = accX * k * (cfg.InvertX ? -1 : 1);   // horizontal finger motion -> about screen Y
-            accX = accY = 0;
-            v.RotateAboutCenter(ax, ay);
+            var v = ActiveView();
+            if (v == null) { accX = accY = accZoom = 0; accPinch = 1; return; }
+            if (mode == Mode.Drag)
+            {
+                if (Math.Abs(accX) < 1e-6 && Math.Abs(accY) < 1e-6) return;
+                bool pan = (GetAsyncKeyState(0x11) & 0x8000) != 0;   // Ctrl held -> pan instead of rotate
+                if (pan != panning) { panning = pan; Log.W(pan ? "PAN" : "ROTATE"); }
+                if (pan) { Pan(v, accX, accY); accX = accY = 0; return; }
+                double k = 1.5 * Math.PI * cfg.RotSpeed;
+                double ax = accY * k * (cfg.InvertY ? -1 : 1);   // vertical finger motion -> about screen X
+                double ay = accX * k * (cfg.InvertX ? -1 : 1);   // horizontal finger motion -> about screen Y
+                accX = accY = 0;
+                v.RotateAboutCenter(ax, ay);
+            }
+            else if (mode == Mode.Pinch)
+            {
+                if (Math.Abs(accPinch - 1) < 1e-3) return;
+                double f = Math.Pow(accPinch, 1.5 * cfg.ZoomSpeed);   // spread = zoom in
+                accPinch = 1;
+                ZoomAt(v, (IntPtr)v.GetViewHWnd(), gx, gy, f);
+            }
+            else if (mode == Mode.Zoom)
+            {
+                if (Math.Abs(accZoom) < 1e-5) return;
+                double f = Math.Exp(-accZoom * 4 * cfg.ZoomSpeed * (cfg.InvertZoom ? -1 : 1));   // drag up (y decreasing) = zoom in
+                accZoom = 0;
+                ZoomAt(v, (IntPtr)v.GetViewHWnd(), gx, gy, f);
+            }
         }
 
         // Move the view so the model follows the fingers (no rotation, no zoom change).
@@ -397,48 +447,24 @@ namespace TouchpadOrbit
 
                 if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP)
                 {
-                    bool padTap = mode == Mode.Touch1 || mode == Mode.TapWait || mode == Mode.Rotate || Now - lastTwoFinger < 200 || Now - rotateEnd < 300;
+                    bool padTap = Active || Now - lastTwoFinger < 200 || Now - gestureEnd < 300;
                     if (padTap)
                     {
-                        if (mode != Mode.Rotate && Now - rotateEnd > 300 && msg == WM_RBUTTONUP) { pendingRClick = true; pendingRClickT = Now; }
-                        return (IntPtr)1;    // hold it back until we know whether a drag follows
+                        bool moving = mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom;
+                        if (!moving && Now - gestureEnd > 300 && msg == WM_RBUTTONUP) { pendingRClick = true; pendingRClickT = Now; }
+                        return (IntPtr)1;    // hold it back until we know whether a zoom drag follows
                     }
                 }
                 else if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
                 {
-                    if (mode == Mode.Rotate || Now - rotateEnd < 400) return (IntPtr)1;   // no scrolling while rotating
-                    bool fromPad = fingers >= 2 || Now - lastTwoFinger < 600;
-                    if (cfg.FixZoom && fromPad && msg == WM_MOUSEWHEEL)
-                    {
-                        int px = Marshal.ReadInt32(lParam, 0), py = Marshal.ReadInt32(lParam, 4);
-                        if (ViewAt(px, py) != null)
-                        {
-                            int delta = (short)((Marshal.ReadInt32(lParam, 32) >> 16) & 0xFFFF);
-                            bool ctrl = (GetKeyState(0x11) & 0x8000) != 0;
-                            if (ctrl != zoomCtrl) zoomAcc = 0;
-                            zoomCtrl = ctrl; zoomAcc += delta; zoomX = px; zoomY = py;
-                            if (!zoomPosted) { zoomPosted = true; PostMessage(Handle, WM_APP_ZOOM, IntPtr.Zero, IntPtr.Zero); }
-                            return (IntPtr)1;
-                        }
-                    }
+                    // the touchpad's own scroll/pinch events would fight our gestures (incl. scroll inertia)
+                    if (Active || Now - gestureEnd < 600) return (IntPtr)1;
                 }
             }
             return CallNextHookEx(hook, code, wParam, lParam);
         }
 
         // ---------------- zoom toward cursor ----------------
-        void DoZoom()
-        {
-            int delta = zoomAcc; zoomAcc = 0;
-            if (delta == 0) return;
-            IntPtr h; var v = ViewAt(zoomX, zoomY, out h); if (v == null) return;
-            double steps = delta / 120.0;
-            bool zoomIn = zoomCtrl ? steps > 0 : (steps < 0) ^ reverseWheel;   // pinch: spread = in; scroll: SolidWorks wheel convention
-            if (cfg.InvertZoom && !zoomCtrl) zoomIn = !zoomIn;
-            double f = Math.Pow(1.0 + 0.15 * cfg.ZoomSpeed, Math.Abs(steps));
-            ZoomAt(v, h, zoomX, zoomY, zoomIn ? f : 1 / f);
-        }
-
         // View transform maps model -> client pixels: q = s*R*p + t (y down). Keep the point under the cursor fixed.
         void ZoomAt(ModelView v, IntPtr h, int sxp, int syp, double f)
         {
