@@ -22,8 +22,8 @@ using SolidWorks.Interop.swpublished;
 [assembly: AssemblyTitle("Touchpad Orbit for SOLIDWORKS")]
 [assembly: AssemblyProduct("Touchpad Orbit")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Omri Stein - MIT License")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.3.1.0")]
+[assembly: AssemblyFileVersion("1.3.1.0")]
 
 namespace TouchpadOrbit
 {

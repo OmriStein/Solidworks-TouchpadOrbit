@@ -51,12 +51,13 @@ Touchpad Orbit is a regular SOLIDWORKS COM add-in (`src/TouchpadOrbit.cs`). It r
 Requires SOLIDWORKS and Visual Studio / Build Tools (for `csc.exe`).
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -Version 1.3.0
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -Version 1.3.1
 ```
 
 This compiles `src\TouchpadOrbit.cs` and regenerates the installers in `dist\` (plus a release zip in `obj\`).
 
 ## Changelog
+- **1.3.1:** Updated README (install notes, how it works, changelog). No change in behaviour.
 - **1.3.0:** New gesture set: two-finger drag rotates, Ctrl + drag pans, tap-and-hold drag or pinch zooms toward the cursor, and twisting two fingers rolls the model. The two-finger-tap right-click is more reliable. The installer and uninstaller wait for SOLIDWORKS to close. Added new settings.
 - **1.0.0:** First release. Two-finger tap-and-hold + drag rotates, and touchpad zoom goes toward the cursor.
 
