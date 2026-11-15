@@ -4,6 +4,7 @@
 //  * Ctrl + two-finger drag             -> pan    (like Ctrl + middle-mouse drag)
 //  * Two-finger tap and hold, then drag -> zoom toward the cursor (drag up = in)
 //  * Pinch                              -> zoom toward the cursor
+//  * Twist two fingers                  -> roll around the axis normal to the screen (like Alt + middle-mouse drag)
 //    (a plain two-finger tap still right-clicks, just ~0.3 s later)
 // Settings: HKCU\Software\TouchpadOrbit (read when SolidWorks starts)
 // Log:      %LOCALAPPDATA%\TouchpadOrbit\log.txt
@@ -21,8 +22,8 @@ using SolidWorks.Interop.swpublished;
 [assembly: AssemblyTitle("Touchpad Orbit for SOLIDWORKS")]
 [assembly: AssemblyProduct("Touchpad Orbit")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Omri Stein - MIT License")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 namespace TouchpadOrbit
 {
@@ -85,7 +86,11 @@ namespace TouchpadOrbit
                 if (fi.Exists && fi.Length > 2000000) fi.Delete();
                 File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.fff") + " " + s + "\r\n");
             }
-            catch { }
+            catch (Exception e)
+            {
+                // fall back to %TEMP% so problems are still visible
+                try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "TouchpadOrbit-log.txt"), DateTime.Now.ToString("HH:mm:ss.fff") + " " + s + "   [main log failed: " + e.Message + "]\r\n"); } catch { }
+            }
         }
     }
 
@@ -95,6 +100,10 @@ namespace TouchpadOrbit
         public int GapMs = 350;           // max gap between the tap and putting fingers down again
         public double DragPct = 1.5;      // finger movement (% of pad width) that starts rotate/pan
         public double PinchPct = 4;       // change in finger spread (% of pad width) that starts pinch zoom
+        public double TwistDeg = 12;      // finger twist (degrees) that starts a roll
+        public double TapMovePct = 3;     // during the first TapMs a drag needs this much movement, so taps stay taps
+        public double TwistSpeed = 1.0;   // 1.0 = model rolls as much as the fingers twist
+        public bool InvertTwist;
         public double RotSpeed = 1.0;     // 1.0 = 1.5*PI radians per full pad width
         public double PanSpeed = 1.0;     // 1.0 = full pad width moves the model one view width
         public bool InvertX, InvertY;
@@ -112,6 +121,10 @@ namespace TouchpadOrbit
                     c.GapMs = I(k, "GapMs", c.GapMs);
                     c.DragPct = D(k, "DragStartPercent", c.DragPct);
                     c.PinchPct = D(k, "PinchStartPercent", c.PinchPct);
+                    c.TwistDeg = D(k, "TwistStartDegrees", c.TwistDeg);
+                    c.TapMovePct = D(k, "TapMovePercent", c.TapMovePct);
+                    c.TwistSpeed = D(k, "TwistSpeed", c.TwistSpeed);
+                    c.InvertTwist = I(k, "InvertTwist", 0) != 0;
                     c.RotSpeed = D(k, "RotateSpeed", c.RotSpeed);
                     c.PanSpeed = D(k, "PanSpeed", c.PanSpeed);
                     c.InvertX = I(k, "InvertHorizontal", 0) != 0;
@@ -150,7 +163,7 @@ namespace TouchpadOrbit
     // Runs on SolidWorks' UI thread: raw touchpad input + thread mouse hook + direct API calls.
     class Engine : NativeWindow, IDisposable
     {
-        enum Mode { Idle, Touch1, TapWait, Drag, Pinch, Zoom, Passive }
+        enum Mode { Idle, Touch1, TapWait, Drag, Pinch, Zoom, Twist, Passive }
 
         readonly SldWorks sw; readonly Cfg cfg;
         readonly Timer timer = new Timer();
@@ -161,9 +174,10 @@ namespace TouchpadOrbit
         Mode mode = Mode.Idle; int fingers, maxFingers;
         double cx, cy, sx, sy, lx, ly, accX, accY;   // centroid, start, last, pending drag (pad-width units)
         double spread0, lastSpread, accPinch = 1, accZoom;
+        double angle0, lastAngle, accTwist;
+        bool viewContact;                            // the current/last two-finger contact started over the model
         int gx, gy;                                  // cursor (screen) when the gesture started
         long t0, tapEnd, lastTwoFinger = -100000, gestureEnd = -100000;
-        bool pendingRClick; long pendingRClickT;
         bool panning;
         double kUnits;
 
@@ -185,7 +199,7 @@ namespace TouchpadOrbit
             hook = SetWindowsHookEx(7 /*WH_MOUSE*/, hookProc, IntPtr.Zero, GetCurrentThreadId());
             if (hook == IntPtr.Zero) Log.W("hook failed " + Marshal.GetLastWin32Error());
             timer.Interval = 10; timer.Tick += (s, e) => Tick(); timer.Start();
-            Log.W("engine up");
+            Log.W("engine up, v" + typeof(Engine).Assembly.GetName().Version);
         }
 
         public void Dispose()
@@ -287,14 +301,18 @@ namespace TouchpadOrbit
         //  two-finger drag -> rotate (Ctrl: pan) | pinch -> zoom | two-finger tap, then hold + drag -> zoom
         void OnFrame(Dictionary<uint, double[]> pts)
         {
-            int n = pts.Count; double x = 0, y = 0, spread = 0;
-            double[] p0 = null;
-            foreach (var p in pts.Values)
-            {
-                x += p[0]; y += p[1];
-                if (p0 == null) p0 = p; else if (n == 2) spread = Dist(p0[0], p0[1], p[0], p[1]);
-            }
+            int n = pts.Count; double x = 0, y = 0, spread = 0, angle = 0;
+            foreach (var p in pts.Values) { x += p[0]; y += p[1]; }
             if (n > 0) { x /= n; y /= n; }
+            if (n == 2)
+            {
+                // order the two fingers by contact id so the angle doesn't flip between frames
+                uint ka = uint.MaxValue, kb = uint.MaxValue;
+                foreach (var k in pts.Keys) { if (k < ka) { kb = ka; ka = k; } else if (k < kb) kb = k; }
+                double[] a = pts[ka], b = pts[kb];
+                spread = Dist(a[0], a[1], b[0], b[1]);
+                angle = Math.Atan2(b[1] - a[1], b[0] - a[0]);   // pad y is down: increasing = clockwise
+            }
             if (n != fingers) Log.W("fingers " + fingers + "->" + n + " (" + mode + ")");
             fingers = n; cx = x; cy = y;
             if (n >= 2) lastTwoFinger = Now;
@@ -304,20 +322,24 @@ namespace TouchpadOrbit
                 case Mode.Idle:
                     if (n == 2)
                     {
-                        if (!CursorOverView()) { mode = Mode.Passive; break; }   // not over the model: leave scrolling alone
-                        mode = Mode.Touch1; t0 = Now; sx = x; sy = y; spread0 = spread; maxFingers = 2; RememberCursor();
+                        viewContact = CursorOverView();
+                        if (!viewContact) { mode = Mode.Passive; break; }   // not over the model: leave scrolling alone
+                        mode = Mode.Touch1; t0 = Now; sx = x; sy = y; spread0 = spread; angle0 = angle; maxFingers = 2; RememberCursor();
                     }
                     else if (n > 2) mode = Mode.Passive;
                     break;
 
-                case Mode.Touch1:   // two fingers down: drag, pinch, or just a tap?
+                case Mode.Touch1:   // two fingers down: drag, pinch, twist, or just a tap?
                     if (n > maxFingers) maxFingers = n;
                     if (maxFingers > 2) { mode = Mode.Passive; break; }
                     if (n == 2)
                     {
                         double move = Dist(x, y, sx, sy) * 100, spr = Math.Abs(spread - spread0) * 100;
-                        if (spr > cfg.PinchPct && spr > move) { mode = Mode.Pinch; lastSpread = spread; accPinch = 1; Log.W("PINCH start"); }
-                        else if (move > cfg.DragPct) { mode = Mode.Drag; lx = x; ly = y; accX = accY = 0; Log.W("DRAG start"); }
+                        double tw = Math.Abs(AngDiff(angle, angle0)), twArc = tw * spread / 2 * 100;   // fingertip travel from twisting
+                        double dragNeed = Now - t0 < cfg.TapMs ? Math.Max(cfg.DragPct, cfg.TapMovePct) : cfg.DragPct;
+                        if (tw * 180 / Math.PI > cfg.TwistDeg && twArc > move && twArc > spr) { mode = Mode.Twist; lastAngle = angle; accTwist = 0; Log.W("TWIST start"); }
+                        else if (spr > cfg.PinchPct && spr > move) { mode = Mode.Pinch; lastSpread = spread; accPinch = 1; Log.W("PINCH start"); }
+                        else if (move > dragNeed) { mode = Mode.Drag; lx = x; ly = y; accX = accY = 0; Log.W("DRAG start"); }
                     }
                     else if (n == 0)
                     {
@@ -327,7 +349,7 @@ namespace TouchpadOrbit
                     break;
 
                 case Mode.TapWait:  // after a two-finger tap: fingers back down -> zoom drag
-                    if (n == 2 && CursorOverView()) { mode = Mode.Zoom; ly = y; accZoom = 0; pendingRClick = false; RememberCursor(); Log.W("ZOOM start"); }
+                    if (n == 2 && CursorOverView()) { mode = Mode.Zoom; ly = y; accZoom = 0; RememberCursor(); Log.W("ZOOM start"); }
                     else if (n > 2) mode = Mode.Passive;
                     break;
 
@@ -346,11 +368,18 @@ namespace TouchpadOrbit
                     else { accZoom += y - ly; ly = y; }
                     break;
 
+                case Mode.Twist:
+                    if (n != 2) EndGesture(n);
+                    else { accTwist += AngDiff(angle, lastAngle); lastAngle = angle; }
+                    break;
+
                 case Mode.Passive:
                     if (n == 0) mode = Mode.Idle;
                     break;
             }
         }
+
+        static double AngDiff(double a, double b) { double d = a - b; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; }
 
         void EndGesture(int n)
         {
@@ -360,7 +389,8 @@ namespace TouchpadOrbit
             mode = n == 0 ? Mode.Idle : Mode.Passive;
         }
 
-        bool Active { get { return mode == Mode.Touch1 || mode == Mode.TapWait || mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom; } }
+        bool Moving { get { return mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom || mode == Mode.Twist; } }
+        bool Active { get { return mode == Mode.Touch1 || mode == Mode.TapWait || Moving; } }
 
         void RememberCursor() { POINT p; GetCursorPos(out p); gx = p.X; gy = p.Y; }
 
@@ -370,14 +400,9 @@ namespace TouchpadOrbit
         {
             try
             {
-                if (mode == Mode.TapWait && Now - tapEnd > cfg.GapMs && fingers < 2) mode = Mode.Idle;
-                if (mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom) Flush();
-                // a two-finger tap's right-click was held back; release it if no zoom drag followed
-                if (pendingRClick && mode != Mode.TapWait && mode != Mode.Touch1 && mode != Mode.Zoom && Now - pendingRClickT > 30)
-                {
-                    pendingRClick = false;
-                    if (Now - gestureEnd > 500) ReplayRightClick();
-                }
+                // two-finger tap with no zoom drag after it -> it was a right-click
+                if (mode == Mode.TapWait && Now - tapEnd > cfg.GapMs && fingers < 2) { mode = Mode.Idle; ReplayRightClick(); }
+                if (Moving) Flush();
                 if (mode != Mode.Idle && mode != Mode.TapWait && fingers < 2 && Now - lastTwoFinger > 1500) mode = Mode.Idle;
             }
             catch (Exception e) { Log.W("tick err " + e.Message); }
@@ -386,7 +411,7 @@ namespace TouchpadOrbit
         void Flush()
         {
             var v = ActiveView();
-            if (v == null) { accX = accY = accZoom = 0; accPinch = 1; return; }
+            if (v == null) { accX = accY = accZoom = accTwist = 0; accPinch = 1; return; }
             if (mode == Mode.Drag)
             {
                 if (Math.Abs(accX) < 1e-6 && Math.Abs(accY) < 1e-6) return;
@@ -405,6 +430,14 @@ namespace TouchpadOrbit
                 double f = Math.Pow(accPinch, 1.5 * cfg.ZoomSpeed);   // spread = zoom in
                 accPinch = 1;
                 ZoomAt(v, (IntPtr)v.GetViewHWnd(), gx, gy, f);
+            }
+            else if (mode == Mode.Twist)
+            {
+                if (Math.Abs(accTwist) < 1e-4) return;
+                // RollBy(+) turns the model counter-clockwise on screen; fingers turning clockwise give +accTwist
+                double r = -accTwist * cfg.TwistSpeed * (cfg.InvertTwist ? -1 : 1);
+                accTwist = 0;
+                v.RollBy(r);
             }
             else if (mode == Mode.Zoom)
             {
@@ -429,7 +462,7 @@ namespace TouchpadOrbit
 
         void ReplayRightClick()
         {
-            Log.W("replay right-click");
+            Log.W("right-click");
             var inp = new INPUT[2];
             inp[0].type = 0; inp[0].mi.dwFlags = 0x0008; inp[0].mi.dwExtraInfo = Marker;   // RIGHTDOWN
             inp[1].type = 0; inp[1].mi.dwFlags = 0x0010; inp[1].mi.dwExtraInfo = Marker;   // RIGHTUP
@@ -447,12 +480,12 @@ namespace TouchpadOrbit
 
                 if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP)
                 {
-                    bool padTap = Active || Now - lastTwoFinger < 200 || Now - gestureEnd < 300;
-                    if (padTap)
+                    // Windows' own two-finger-tap right-click over the model is dropped; we send our own
+                    // once we know the tap wasn't the start of a zoom (see Tick)
+                    if (viewContact && (Active || Now - lastTwoFinger < 500 || Now - gestureEnd < 500))
                     {
-                        bool moving = mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom;
-                        if (!moving && Now - gestureEnd > 300 && msg == WM_RBUTTONUP) { pendingRClick = true; pendingRClickT = Now; }
-                        return (IntPtr)1;    // hold it back until we know whether a zoom drag follows
+                        Log.W("pad right-button " + (msg == WM_RBUTTONDOWN ? "down" : "up") + " held (" + mode + ")");
+                        return (IntPtr)1;
                     }
                 }
                 else if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL)
@@ -522,7 +555,6 @@ namespace TouchpadOrbit
         [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
         [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int c, IntPtr w, IntPtr l);
         [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
-        [DllImport("user32.dll")] static extern short GetKeyState(int vk);
         [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
         [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);

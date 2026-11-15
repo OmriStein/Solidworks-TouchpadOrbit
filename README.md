@@ -9,6 +9,7 @@ Over the model in a part or assembly:
 - **Pan:** hold **Ctrl** and drag with two fingers. The model moves with your fingers without rotating or changing zoom, like Ctrl + middle-mouse drag.
 - **Zoom:** tap and hold with two fingers, then drag. Drag up to zoom in, down to zoom out. It zooms toward the cursor.
 - **Pinch:** also zooms toward the cursor.
+- **Roll:** twist two fingers around each other to turn the model around the axis pointing out of the screen, like Alt + middle-mouse drag.
 - A plain two-finger tap still right-clicks (about 0.3 s later than usual).
 - Outside the model (for example in the FeatureManager tree), two-finger scrolling works as normal. A mouse wheel and one-finger drag behave as normal everywhere.
 
@@ -32,8 +33,11 @@ Settings are in the registry under `HKCU\Software\TouchpadOrbit`. Restart SOLIDW
 | ZoomSpeed | 1.0 | Zoom speed multiplier (tap-and-hold drag and pinch) |
 | InvertHorizontal / InvertVertical | 0 | Set to 1 to flip a rotation direction |
 | InvertZoom | 0 | Set to 1 to make dragging down zoom in |
+| TwistSpeed / InvertTwist | 1.0 / 0 | Roll speed (1.0 = the model turns as much as your fingers) and direction |
 | DragStartPercent | 1.5 | How far the fingers must move (% of pad width) before rotate/pan starts |
 | PinchStartPercent | 4 | How much the finger spread must change (% of pad width) before pinch zoom starts |
+| TwistStartDegrees | 12 | How far the fingers must twist before a roll starts |
+| TapMovePercent | 3 | Within the first TapMs, how far the fingers can move and still count as a tap (right-click) |
 | TapMs | 250 | Longest the two-finger tap can last (ms) |
 | GapMs | 350 | Longest gap allowed between the tap and putting the fingers back down (ms) |
 | Debug | 1 | Writes a log to `%LOCALAPPDATA%\TouchpadOrbit\log.txt` |
