@@ -9,11 +9,11 @@ $guid = '{8C3E1F2A-6B4D-4E7F-9A15-2D3C4B5A6E71}'
 $dest = 'C:\ProgramData\TouchpadOrbit'
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-if (Get-Process SLDWORKS -ErrorAction SilentlyContinue) {
-    Write-Host 'Please close SOLIDWORKS first, then run this again.' -ForegroundColor Yellow
-    Read-Host 'Press Enter to close'; exit
+# every SOLIDWORKS instance must be closed, otherwise the add-in DLL is locked
+while ($swp = @(Get-Process SLDWORKS -ErrorAction SilentlyContinue)) {
+    Write-Host "$($swp.Count) SOLIDWORKS window(s) still open. Save your work and close all of them." -ForegroundColor Yellow
+    Read-Host 'Then press Enter to continue (or close this window to cancel)'
 }
-
 # per-user settings (for the user who runs this)
 Remove-Item "HKCU:\Software\SolidWorks\AddInsStartup\$guid" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item 'HKCU:\Software\TouchpadOrbit' -Recurse -Force -ErrorAction SilentlyContinue
