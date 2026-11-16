@@ -42,21 +42,22 @@ Settings are in the registry under `HKCU\Software\TouchpadOrbit`. Restart SOLIDW
 | GapMs | 350 | Longest gap allowed between the tap and putting the fingers back down (ms) |
 | Debug | 1 | Writes a log to `%LOCALAPPDATA%\TouchpadOrbit\log.txt` (or `%TEMP%\TouchpadOrbit-log.txt` if that can't be written) |
 
-Requirements: Windows, SOLIDWORKS 2021 or later (64-bit), and a precision touchpad.
+Requirements: Windows, 64-bit SOLIDWORKS, and a precision touchpad. The same installer works with any SOLIDWORKS version.
 
 ## How it works
-Touchpad Orbit is a regular SOLIDWORKS COM add-in (`src/TouchpadOrbit.cs`). It reads finger positions from the precision touchpad via Windows Raw Input and works out which gesture you're making (drag, pinch, twist, or a tap followed by a hold). It then drives the view through the SOLIDWORKS API (`RotateAboutCenter`, `TranslateBy`, `ZoomByFactor` and `RollBy`). Zooming keeps the point under the cursor fixed. Over the model, it blocks the touchpad's own scroll and right-click messages so they don't interfere, and sends its own right-click for a two-finger tap. The installer contains the compiled DLL, copies the SOLIDWORKS interop DLLs from your own SOLIDWORKS install, and registers it with `RegAsm`.
+Touchpad Orbit is a regular SOLIDWORKS COM add-in (`src/TouchpadOrbit.cs`). It reads finger positions from the precision touchpad via Windows Raw Input and works out which gesture you're making (drag, pinch, twist, or a tap followed by a hold). It then drives the view through the SOLIDWORKS API (`RotateAboutCenter`, `TranslateBy`, `ZoomByFactor` and `RollBy`). Zooming keeps the point under the cursor fixed. Over the model, it blocks the touchpad's own scroll and right-click messages so they don't interfere, and sends its own right-click for a two-finger tap. It doesn't reference SOLIDWORKS' interop assemblies. It declares the `ISwAddin` interface itself and calls the API late-bound, the same way VBA macros do, so one build works with every SOLIDWORKS version. The installer contains the compiled DLL and registers it with `RegAsm`.
 
 ## Building from source
-Requires SOLIDWORKS and Visual Studio / Build Tools (for `csc.exe`).
+Requires Visual Studio or Build Tools (for `csc.exe`). SOLIDWORKS isn't needed to build.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -Version 1.3.1
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -Version 1.4.0
 ```
 
 This compiles `src\TouchpadOrbit.cs` and regenerates the installers in `dist\` (plus a release zip in `obj\`).
 
 ## Changelog
+- **1.4.0:** Works with any SOLIDWORKS version. The add-in no longer depends on the SOLIDWORKS interop DLLs, which made installation fail on versions other than the one it was built with.
 - **1.3.1:** Updated README (install notes, how it works, changelog). No change in behaviour.
 - **1.3.0:** New gesture set: two-finger drag rotates, Ctrl + drag pans, tap-and-hold drag or pinch zooms toward the cursor, and twisting two fingers rolls the model. The two-finger-tap right-click is more reliable. The installer and uninstaller wait for SOLIDWORKS to close. Added new settings.
 - **1.0.0:** First release. Two-finger tap-and-hold + drag rotates, and touchpad zoom goes toward the cursor.

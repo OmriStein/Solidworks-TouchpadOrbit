@@ -33,14 +33,14 @@ try {
     Get-Process TouchpadOrbit -ErrorAction SilentlyContinue | Stop-Process -Force   # old tray version
     $sw = Get-ChildItem 'HKLM:\SOFTWARE\SolidWorks' | ? PSChildName -match '^SOLIDWORKS \d{4}$' | Sort-Object PSChildName -Descending |
           % { (Get-ItemProperty "$($_.PSPath)\Setup" -ErrorAction SilentlyContinue).'SolidWorks Folder' } |
-          ? { $_ -and (Test-Path (Join-Path $_ 'SolidWorks.Interop.sldworks.dll')) } | Select-Object -First 1
+          ? { $_ -and (Test-Path (Join-Path $_ 'sldworks.exe')) } | Select-Object -First 1
     if (-not $sw) { throw 'SOLIDWORKS installation not found.' }
     Write-Host "SOLIDWORKS: $sw"
 
     $regasm = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe"
     New-Item -ItemType Directory -Force $dest | Out-Null
     if (Test-Path "$dest\TouchpadOrbit.dll") { & $regasm /u "$dest\TouchpadOrbit.dll" /silent | Out-Null }
-    foreach ($d in 'SolidWorks.Interop.sldworks.dll','SolidWorks.Interop.swpublished.dll','SolidWorks.Interop.swconst.dll') { Copy-Item (Join-Path $sw $d) $dest -Force }
+    Remove-Item "$dest\SolidWorks.Interop.*.dll" -Force -ErrorAction SilentlyContinue   # left over from versions before 1.4
     [IO.File]::WriteAllBytes("$dest\TouchpadOrbit.dll", [Convert]::FromBase64String(($DLL -replace '\s','')))
     & $regasm /codebase "$dest\TouchpadOrbit.dll" /silent
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed.' }

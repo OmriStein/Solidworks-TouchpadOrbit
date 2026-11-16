@@ -16,27 +16,70 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Win32;
-using SolidWorks.Interop.sldworks;
-using SolidWorks.Interop.swpublished;
 
 [assembly: AssemblyTitle("Touchpad Orbit for SOLIDWORKS")]
 [assembly: AssemblyProduct("Touchpad Orbit")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Omri Stein - MIT License")]
-[assembly: AssemblyVersion("1.3.1.0")]
-[assembly: AssemblyFileVersion("1.3.1.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 namespace TouchpadOrbit
 {
+    // SOLIDWORKS' add-in interface, declared here instead of referencing the interop assemblies.
+    // With no compile-time link to a particular SOLIDWORKS version, one build works with all of them.
+    [ComImport, Guid("DA306A0D-EAC5-4406-8610-B1DA805D9270"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface ISwAddin
+    {
+        bool ConnectToSW([In, MarshalAs(UnmanagedType.IDispatch)] object ThisSW, [In] int Cookie);
+        bool DisconnectFromSW();
+    }
+
+    // Late-bound (IDispatch) calls into SOLIDWORKS - the same way VBA macros talk to it.
+    static class Com
+    {
+        public static object Get(object o, string name) { return o.GetType().InvokeMember(name, BindingFlags.GetProperty, null, o, null); }
+        public static object Call(object o, string name, params object[] args) { return o.GetType().InvokeMember(name, BindingFlags.InvokeMethod, null, o, args); }
+        public static void Release(object o) { if (o != null && Marshal.IsComObject(o)) Marshal.ReleaseComObject(o); }
+    }
+
+    // The bits of ISwView that the add-in uses.
+    class SwView
+    {
+        readonly object v;
+        public SwView(object v) { this.v = v; }
+        public IntPtr Hwnd { get { return (IntPtr)Convert.ToInt64(Com.Call(v, "GetViewHWnd")); } }
+        public double Scale2 { get { return Convert.ToDouble(Com.Get(v, "Scale2")); } }
+        public double[] Transform
+        {
+            get
+            {
+                object t = Com.Get(v, "Transform");
+                try
+                {
+                    var arr = (Array)Com.Get(t, "ArrayData");
+                    var r = new double[arr.Length];
+                    for (int i = 0; i < r.Length; i++) r[i] = Convert.ToDouble(arr.GetValue(i));
+                    return r;
+                }
+                finally { Com.Release(t); }
+            }
+        }
+        public void RotateAboutCenter(double x, double y) { Com.Call(v, "RotateAboutCenter", x, y); }
+        public void TranslateBy(double x, double y) { Com.Call(v, "TranslateBy", x, y); }
+        public void ZoomByFactor(double f) { Com.Call(v, "ZoomByFactor", f); }
+        public void RollBy(double a) { Com.Call(v, "RollBy", a); }
+    }
+
     [ComVisible(true), Guid("8C3E1F2A-6B4D-4E7F-9A15-2D3C4B5A6E71"), ProgId("TouchpadOrbit.Addin")]
     public class Addin : ISwAddin
     {
         const string Key = @"SOFTWARE\SolidWorks\AddIns\{8C3E1F2A-6B4D-4E7F-9A15-2D3C4B5A6E71}";
         const string StartKey = @"Software\SolidWorks\AddInsStartup\{8C3E1F2A-6B4D-4E7F-9A15-2D3C4B5A6E71}";
-        SldWorks sw; Engine eng;
+        object sw; Engine eng;
 
         public bool ConnectToSW(object ThisSW, int Cookie)
         {
-            sw = (SldWorks)ThisSW;
+            sw = ThisSW;
             try { eng = new Engine(sw); Log.W("add-in connected"); }
             catch (Exception e) { Log.W("connect failed: " + e); }
             return true;
@@ -46,7 +89,7 @@ namespace TouchpadOrbit
         {
             try { if (eng != null) eng.Dispose(); } catch { }
             eng = null;
-            if (sw != null) Marshal.ReleaseComObject(sw);
+            Com.Release(sw);
             sw = null; GC.Collect(); GC.WaitForPendingFinalizers();
             return true;
         }
@@ -165,7 +208,7 @@ namespace TouchpadOrbit
     {
         enum Mode { Idle, Touch1, TapWait, Drag, Pinch, Zoom, Twist, Passive }
 
-        readonly SldWorks sw; readonly Cfg cfg;
+        readonly object sw; readonly Cfg cfg;
         readonly Timer timer = new Timer();
         readonly Dictionary<IntPtr, Dev> devs = new Dictionary<IntPtr, Dev>();
         readonly Stopwatch clock = Stopwatch.StartNew();
@@ -186,7 +229,7 @@ namespace TouchpadOrbit
         const int WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205;
         const int HIDP_OK = 0x00110000;
 
-        public Engine(SldWorks sw)
+        public Engine(object sw)
         {
             this.sw = sw;
             cfg = Cfg.Load(); Log.On = cfg.Debug;
@@ -429,7 +472,7 @@ namespace TouchpadOrbit
                 if (Math.Abs(accPinch - 1) < 1e-3) return;
                 double f = Math.Pow(accPinch, 1.5 * cfg.ZoomSpeed);   // spread = zoom in
                 accPinch = 1;
-                ZoomAt(v, (IntPtr)v.GetViewHWnd(), gx, gy, f);
+                ZoomAt(v, v.Hwnd, gx, gy, f);
             }
             else if (mode == Mode.Twist)
             {
@@ -444,17 +487,17 @@ namespace TouchpadOrbit
                 if (Math.Abs(accZoom) < 1e-5) return;
                 double f = Math.Exp(-accZoom * 4 * cfg.ZoomSpeed * (cfg.InvertZoom ? -1 : 1));   // drag up (y decreasing) = zoom in
                 accZoom = 0;
-                ZoomAt(v, (IntPtr)v.GetViewHWnd(), gx, gy, f);
+                ZoomAt(v, v.Hwnd, gx, gy, f);
             }
         }
 
         // Move the view so the model follows the fingers (no rotation, no zoom change).
-        void Pan(ModelView v, double dx, double dy)
+        void Pan(SwView v, double dx, double dy)
         {
-            RECT rc; GetClientRect((IntPtr)v.GetViewHWnd(), out rc);
+            RECT rc; GetClientRect(v.Hwnd, out rc);
             double w = Math.Max(200, rc.Right - rc.Left);
             double px = dx * w * cfg.PanSpeed, py = dy * w * cfg.PanSpeed;   // pad-width fraction -> pixels
-            var a = (double[])((MathTransform)v.Transform).ArrayData;
+            var a = v.Transform;
             double k = a[12] / v.Scale2;                                        // pixels per TranslateBy unit
             if (k <= 0) return;
             v.TranslateBy(px / k, -py / k);                                     // screen y is down, view y is up
@@ -499,15 +542,15 @@ namespace TouchpadOrbit
 
         // ---------------- zoom toward cursor ----------------
         // View transform maps model -> client pixels: q = s*R*p + t (y down). Keep the point under the cursor fixed.
-        void ZoomAt(ModelView v, IntPtr h, int sxp, int syp, double f)
+        void ZoomAt(SwView v, IntPtr h, int sxp, int syp, double f)
         {
             var pt = new POINT { X = sxp, Y = syp }; ScreenToClient(h, ref pt);
             double qx = pt.X, qy = pt.Y;
-            var a = (double[])((MathTransform)v.Transform).ArrayData;
+            var a = v.Transform;
             double s = a[12], tx = a[9], ty = a[10];
             if (kUnits <= 0) kUnits = s / v.Scale2;
             v.ZoomByFactor(f);
-            var b = (double[])((MathTransform)v.Transform).ArrayData;
+            var b = v.Transform;
             double s2 = b[12], tx2 = b[9], ty2 = b[10];
             double dx = qx - (s2 / s * (qx - tx) + tx2), dy = qy - (s2 / s * (qy - ty) + ty2);
             if (Math.Abs(dx) < 0.5 && Math.Abs(dy) < 0.5) return;
@@ -515,25 +558,26 @@ namespace TouchpadOrbit
             v.TranslateBy(ux, uy);
             if (Math.Abs(dx) > 5)
             {
-                var c = (double[])((MathTransform)v.Transform).ArrayData;
+                var c = v.Transform;
                 double k = (c[9] - tx2) / ux; if (k > 0) kUnits = 0.5 * kUnits + 0.5 * k;
             }
         }
 
         // ---------------- helpers ----------------
-        ModelView ActiveView()
+        SwView ActiveView()
         {
-            var d = sw.ActiveDoc as ModelDoc2; if (d == null) return null;
-            int t = d.GetType(); if (t != 1 && t != 2) return null;   // parts & assemblies
-            return d.ActiveView as ModelView;
+            object d = Com.Get(sw, "ActiveDoc"); if (d == null) return null;
+            int t = Convert.ToInt32(Com.Call(d, "GetType")); if (t != 1 && t != 2) return null;   // parts & assemblies
+            object v = Com.Get(d, "ActiveView");
+            return v == null ? null : new SwView(v);
         }
         bool CursorOverView() { POINT p; GetCursorPos(out p); return ViewAt(p.X, p.Y) != null; }
-        ModelView ViewAt(int x, int y) { IntPtr h; return ViewAt(x, y, out h); }
-        ModelView ViewAt(int x, int y, out IntPtr h)
+        SwView ViewAt(int x, int y) { IntPtr h; return ViewAt(x, y, out h); }
+        SwView ViewAt(int x, int y, out IntPtr h)
         {
             h = IntPtr.Zero;
             var v = ActiveView(); if (v == null) return null;
-            h = (IntPtr)v.GetViewHWnd();
+            h = v.Hwnd;
             return WindowFromPoint(new POINT { X = x, Y = y }) == h ? v : null;
         }
 

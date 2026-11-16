@@ -1,15 +1,8 @@
 # Builds TouchpadOrbit.dll from src\ and writes the installers to dist\.
-# Needs: SOLIDWORKS (for the interop DLLs) and Visual Studio or Build Tools (for csc.exe).
-param([string]$SolidWorksDir, [string]$Version = '1.0.0')
+# Needs: Visual Studio or Build Tools (for csc.exe). SOLIDWORKS is not needed to build.
+param([string]$Version = '1.4.0')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-
-if (-not $SolidWorksDir) {
-    $SolidWorksDir = Get-ChildItem 'HKLM:\SOFTWARE\SolidWorks' | ? PSChildName -match '^SOLIDWORKS \d{4}$' | Sort-Object PSChildName -Descending |
-        % { (Get-ItemProperty "$($_.PSPath)\Setup" -ErrorAction SilentlyContinue).'SolidWorks Folder' } |
-        ? { $_ -and (Test-Path (Join-Path $_ 'SolidWorks.Interop.sldworks.dll')) } | Select-Object -First 1
-}
-if (-not $SolidWorksDir) { throw 'SOLIDWORKS not found - pass -SolidWorksDir.' }
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $csc = & $vswhere -products * -find 'MSBuild\Current\Bin\Roslyn\csc.exe' | Select-Object -First 1
@@ -18,7 +11,6 @@ if (-not $csc) { throw 'csc.exe not found - install Visual Studio or Build Tools
 $obj = Join-Path $root 'obj'; $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force $obj, $dist | Out-Null
 & $csc /nologo /target:library /platform:x64 /optimize+ /deterministic /out:"$obj\TouchpadOrbit.dll" `
-    /r:"$SolidWorksDir\SolidWorks.Interop.sldworks.dll" /r:"$SolidWorksDir\SolidWorks.Interop.swpublished.dll" `
     /r:System.Windows.Forms.dll "$root\src\TouchpadOrbit.cs"
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 
