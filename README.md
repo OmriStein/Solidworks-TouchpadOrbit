@@ -6,11 +6,10 @@ Lets you rotate, pan, zoom and roll SOLIDWORKS models with a laptop touchpad, th
 Over the model in a part or assembly:
 
 - **Rotate:** drag with two fingers.
-- **Pan:** hold **Ctrl** and drag with two fingers. The model moves with your fingers without rotating or changing zoom, like Ctrl + middle-mouse drag.
-- **Zoom:** tap and hold with two fingers, then drag. Drag up to zoom in, down to zoom out. It zooms toward the cursor.
-- **Pinch:** also zooms toward the cursor.
+- **Pan:** tap and hold with two fingers, then drag (or hold **Ctrl** and drag with two). The model moves with your fingers without rotating or changing zoom, like Ctrl + middle-mouse drag.
+- **Zoom:** pinch. It zooms toward the cursor.
 - **Roll:** twist two fingers around each other to turn the model around the axis pointing out of the screen, like Alt + middle-mouse drag.
-- A plain two-finger tap still right-clicks (about 0.35 s later than usual, so the add-in can tell it apart from the start of a zoom).
+- A plain two-finger tap still right-clicks (about 0.35 s later than usual, so the add-in can tell it apart from the start of a pan).
 - Outside the model (for example in the FeatureManager tree), two-finger scrolling works as normal. A mouse wheel and one-finger drag behave as normal everywhere.
 
 ## Install
@@ -30,9 +29,8 @@ Settings are in the registry under `HKCU\Software\TouchpadOrbit`. Restart SOLIDW
 |---|---|---|
 | RotateSpeed | 1.0 | Rotation speed multiplier |
 | PanSpeed | 1.0 | Pan speed multiplier (1.0 = a full pad-width swipe moves the model one view width) |
-| ZoomSpeed | 1.0 | Zoom speed multiplier (tap-and-hold drag and pinch) |
+| ZoomSpeed | 1.0 | Zoom speed multiplier (pinch) |
 | InvertHorizontal / InvertVertical | 0 | Set to 1 to flip a rotation direction |
-| InvertZoom | 0 | Set to 1 to make dragging down zoom in |
 | TwistSpeed / InvertTwist | 1.0 / 0 | Roll speed (1.0 = the model turns as much as your fingers) and direction |
 | DragStartPercent | 1.5 | How far the fingers must move (% of pad width) before rotate/pan starts |
 | PinchStartPercent | 4 | How much the finger spread must change (% of pad width) before pinch zoom starts |
@@ -57,6 +55,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1 -Version 1.4.0
 This compiles `src\TouchpadOrbit.cs` and regenerates the installers in `dist\` (plus a release zip in `obj\`).
 
 ## Changelog
+- **1.5.0:** Tap and hold with two fingers, then drag, now pans (it used to zoom; pinch still zooms).
 - **1.4.0:** Works with any SOLIDWORKS version. The add-in no longer depends on the SOLIDWORKS interop DLLs, which made installation fail on versions other than the one it was built with.
 - **1.3.1:** Updated README (install notes, how it works, changelog). No change in behaviour.
 - **1.3.0:** New gesture set: two-finger drag rotates, Ctrl + drag pans, tap-and-hold drag or pinch zooms toward the cursor, and twisting two fingers rolls the model. The two-finger-tap right-click is more reliable. The installer and uninstaller wait for SOLIDWORKS to close. Added new settings.

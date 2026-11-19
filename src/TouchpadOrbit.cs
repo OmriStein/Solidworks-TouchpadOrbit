@@ -1,8 +1,8 @@
 // Touchpad Orbit - SOLIDWORKS add-in for touchpad navigation
 // https://github.com/OmriStein/Solidworks-TouchpadOrbit   (MIT License)
 //  * Two-finger drag                    -> rotate (like middle-mouse drag)
-//  * Ctrl + two-finger drag             -> pan    (like Ctrl + middle-mouse drag)
-//  * Two-finger tap and hold, then drag -> zoom toward the cursor (drag up = in)
+//  * Two-finger tap and hold, then drag -> pan    (like Ctrl + middle-mouse drag)
+//  * Ctrl + two-finger drag             -> pan    (same, still supported)
 //  * Pinch                              -> zoom toward the cursor
 //  * Twist two fingers                  -> roll around the axis normal to the screen (like Alt + middle-mouse drag)
 //    (a plain two-finger tap still right-clicks, just ~0.3 s later)
@@ -20,8 +20,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Touchpad Orbit for SOLIDWORKS")]
 [assembly: AssemblyProduct("Touchpad Orbit")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Omri Stein - MIT License")]
-[assembly: AssemblyVersion("1.4.0.0")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
 
 namespace TouchpadOrbit
 {
@@ -101,7 +101,7 @@ namespace TouchpadOrbit
             {
                 k.SetValue(null, 1, RegistryValueKind.DWord);
                 k.SetValue("Title", "Touchpad Orbit");
-                k.SetValue("Description", "Two-finger tap + drag rotates; touchpad zoom goes to the cursor");
+                k.SetValue("Description", "Two-finger drag rotates, tap-hold drag pans, pinch zooms to the cursor");
             }
             using (var k = Registry.CurrentUser.CreateSubKey(StartKey))
                 k.SetValue(null, 1, RegistryValueKind.DWord);
@@ -151,7 +151,6 @@ namespace TouchpadOrbit
         public double PanSpeed = 1.0;     // 1.0 = full pad width moves the model one view width
         public bool InvertX, InvertY;
         public double ZoomSpeed = 1.0;
-        public bool InvertZoom;
         public bool Debug = true;
         public static Cfg Load()
         {
@@ -173,7 +172,6 @@ namespace TouchpadOrbit
                     c.InvertX = I(k, "InvertHorizontal", 0) != 0;
                     c.InvertY = I(k, "InvertVertical", 0) != 0;
                     c.ZoomSpeed = D(k, "ZoomSpeed", c.ZoomSpeed);
-                    c.InvertZoom = I(k, "InvertZoom", 0) != 0;
                     c.Debug = I(k, "Debug", 1) != 0;
                 }
             }
@@ -206,7 +204,7 @@ namespace TouchpadOrbit
     // Runs on SolidWorks' UI thread: raw touchpad input + thread mouse hook + direct API calls.
     class Engine : NativeWindow, IDisposable
     {
-        enum Mode { Idle, Touch1, TapWait, Drag, Pinch, Zoom, Twist, Passive }
+        enum Mode { Idle, Touch1, TapWait, Drag, Pan, Pinch, Twist, Passive }
 
         readonly object sw; readonly Cfg cfg;
         readonly Timer timer = new Timer();
@@ -216,7 +214,7 @@ namespace TouchpadOrbit
 
         Mode mode = Mode.Idle; int fingers, maxFingers;
         double cx, cy, sx, sy, lx, ly, accX, accY;   // centroid, start, last, pending drag (pad-width units)
-        double spread0, lastSpread, accPinch = 1, accZoom;
+        double spread0, lastSpread, accPinch = 1;
         double angle0, lastAngle, accTwist;
         bool viewContact;                            // the current/last two-finger contact started over the model
         int gx, gy;                                  // cursor (screen) when the gesture started
@@ -341,7 +339,7 @@ namespace TouchpadOrbit
         }
 
         // ---------------- gestures ----------------
-        //  two-finger drag -> rotate (Ctrl: pan) | pinch -> zoom | two-finger tap, then hold + drag -> zoom
+        //  two-finger drag -> rotate (Ctrl: pan) | pinch -> zoom | two-finger tap, then hold + drag -> pan
         void OnFrame(Dictionary<uint, double[]> pts)
         {
             int n = pts.Count; double x = 0, y = 0, spread = 0, angle = 0;
@@ -391,12 +389,13 @@ namespace TouchpadOrbit
                     }
                     break;
 
-                case Mode.TapWait:  // after a two-finger tap: fingers back down -> zoom drag
-                    if (n == 2 && CursorOverView()) { mode = Mode.Zoom; ly = y; accZoom = 0; RememberCursor(); Log.W("ZOOM start"); }
+                case Mode.TapWait:  // after a two-finger tap: fingers back down -> pan drag
+                    if (n == 2 && CursorOverView()) { mode = Mode.Pan; lx = x; ly = y; accX = accY = 0; RememberCursor(); Log.W("PAN (tap-hold) start"); }
                     else if (n > 2) mode = Mode.Passive;
                     break;
 
                 case Mode.Drag:
+                case Mode.Pan:
                     if (n != 2) EndGesture(n);
                     else { accX += x - lx; accY += y - ly; lx = x; ly = y; }
                     break;
@@ -404,11 +403,6 @@ namespace TouchpadOrbit
                 case Mode.Pinch:
                     if (n != 2) EndGesture(n);
                     else { if (lastSpread > 1e-4 && spread > 1e-4) accPinch *= spread / lastSpread; lastSpread = spread; }
-                    break;
-
-                case Mode.Zoom:
-                    if (n != 2) EndGesture(n);
-                    else { accZoom += y - ly; ly = y; }
                     break;
 
                 case Mode.Twist:
@@ -432,7 +426,7 @@ namespace TouchpadOrbit
             mode = n == 0 ? Mode.Idle : Mode.Passive;
         }
 
-        bool Moving { get { return mode == Mode.Drag || mode == Mode.Pinch || mode == Mode.Zoom || mode == Mode.Twist; } }
+        bool Moving { get { return mode == Mode.Drag || mode == Mode.Pan || mode == Mode.Pinch || mode == Mode.Twist; } }
         bool Active { get { return mode == Mode.Touch1 || mode == Mode.TapWait || Moving; } }
 
         void RememberCursor() { POINT p; GetCursorPos(out p); gx = p.X; gy = p.Y; }
@@ -443,7 +437,7 @@ namespace TouchpadOrbit
         {
             try
             {
-                // two-finger tap with no zoom drag after it -> it was a right-click
+                // two-finger tap with no pan drag after it -> it was a right-click
                 if (mode == Mode.TapWait && Now - tapEnd > cfg.GapMs && fingers < 2) { mode = Mode.Idle; ReplayRightClick(); }
                 if (Moving) Flush();
                 if (mode != Mode.Idle && mode != Mode.TapWait && fingers < 2 && Now - lastTwoFinger > 1500) mode = Mode.Idle;
@@ -454,11 +448,11 @@ namespace TouchpadOrbit
         void Flush()
         {
             var v = ActiveView();
-            if (v == null) { accX = accY = accZoom = accTwist = 0; accPinch = 1; return; }
-            if (mode == Mode.Drag)
+            if (v == null) { accX = accY = accTwist = 0; accPinch = 1; return; }
+            if (mode == Mode.Drag || mode == Mode.Pan)
             {
                 if (Math.Abs(accX) < 1e-6 && Math.Abs(accY) < 1e-6) return;
-                bool pan = (GetAsyncKeyState(0x11) & 0x8000) != 0;   // Ctrl held -> pan instead of rotate
+                bool pan = mode == Mode.Pan || (GetAsyncKeyState(0x11) & 0x8000) != 0;   // tap-hold drag, or Ctrl held -> pan instead of rotate
                 if (pan != panning) { panning = pan; Log.W(pan ? "PAN" : "ROTATE"); }
                 if (pan) { Pan(v, accX, accY); accX = accY = 0; return; }
                 double k = 1.5 * Math.PI * cfg.RotSpeed;
@@ -481,13 +475,6 @@ namespace TouchpadOrbit
                 double r = -accTwist * cfg.TwistSpeed * (cfg.InvertTwist ? -1 : 1);
                 accTwist = 0;
                 v.RollBy(r);
-            }
-            else if (mode == Mode.Zoom)
-            {
-                if (Math.Abs(accZoom) < 1e-5) return;
-                double f = Math.Exp(-accZoom * 4 * cfg.ZoomSpeed * (cfg.InvertZoom ? -1 : 1));   // drag up (y decreasing) = zoom in
-                accZoom = 0;
-                ZoomAt(v, v.Hwnd, gx, gy, f);
             }
         }
 
@@ -524,7 +511,7 @@ namespace TouchpadOrbit
                 if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP)
                 {
                     // Windows' own two-finger-tap right-click over the model is dropped; we send our own
-                    // once we know the tap wasn't the start of a zoom (see Tick)
+                    // once we know the tap wasn't the start of a pan (see Tick)
                     if (viewContact && (Active || Now - lastTwoFinger < 500 || Now - gestureEnd < 500))
                     {
                         Log.W("pad right-button " + (msg == WM_RBUTTONDOWN ? "down" : "up") + " held (" + mode + ")");
