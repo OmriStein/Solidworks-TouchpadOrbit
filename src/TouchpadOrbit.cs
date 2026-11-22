@@ -4,6 +4,7 @@
 //  * Two-finger tap and hold, then drag -> pan    (like Ctrl + middle-mouse drag)
 //  * Ctrl + two-finger drag             -> pan    (same, still supported)
 //  * Pinch                              -> zoom toward the cursor
+//  * In drawings: two-finger drag -> pan, pinch -> zoom toward the cursor (no rotate/roll in 2D)
 //  * Twist two fingers                  -> roll around the axis normal to the screen (like Alt + middle-mouse drag)
 //    (a plain two-finger tap still right-clicks, just ~0.3 s later)
 // Settings: HKCU\Software\TouchpadOrbit (read when SolidWorks starts)
@@ -20,8 +21,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Touchpad Orbit for SOLIDWORKS")]
 [assembly: AssemblyProduct("Touchpad Orbit")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Omri Stein - MIT License")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 namespace TouchpadOrbit
 {
@@ -101,7 +102,7 @@ namespace TouchpadOrbit
             {
                 k.SetValue(null, 1, RegistryValueKind.DWord);
                 k.SetValue("Title", "Touchpad Orbit");
-                k.SetValue("Description", "Two-finger drag rotates, tap-hold drag pans, pinch zooms to the cursor");
+                k.SetValue("Description", "Two-finger drag rotates (pans in drawings), tap-hold drag pans, pinch zooms to the cursor");
             }
             using (var k = Registry.CurrentUser.CreateSubKey(StartKey))
                 k.SetValue(null, 1, RegistryValueKind.DWord);
@@ -219,7 +220,7 @@ namespace TouchpadOrbit
         bool viewContact;                            // the current/last two-finger contact started over the model
         int gx, gy;                                  // cursor (screen) when the gesture started
         long t0, tapEnd, lastTwoFinger = -100000, gestureEnd = -100000;
-        bool panning;
+        bool panning, inDrawing, drawLogged;         // inDrawing: active document is a drawing (2D: pan + zoom only)
         double kUnits;
 
         static readonly IntPtr Marker = (IntPtr)0x70A0B17;
@@ -378,7 +379,7 @@ namespace TouchpadOrbit
                         double move = Dist(x, y, sx, sy) * 100, spr = Math.Abs(spread - spread0) * 100;
                         double tw = Math.Abs(AngDiff(angle, angle0)), twArc = tw * spread / 2 * 100;   // fingertip travel from twisting
                         double dragNeed = Now - t0 < cfg.TapMs ? Math.Max(cfg.DragPct, cfg.TapMovePct) : cfg.DragPct;
-                        if (tw * 180 / Math.PI > cfg.TwistDeg && twArc > move && twArc > spr) { mode = Mode.Twist; lastAngle = angle; accTwist = 0; Log.W("TWIST start"); }
+                        if (!inDrawing && tw * 180 / Math.PI > cfg.TwistDeg && twArc > move && twArc > spr) { mode = Mode.Twist; lastAngle = angle; accTwist = 0; Log.W("TWIST start"); }
                         else if (spr > cfg.PinchPct && spr > move) { mode = Mode.Pinch; lastSpread = spread; accPinch = 1; Log.W("PINCH start"); }
                         else if (move > dragNeed) { mode = Mode.Drag; lx = x; ly = y; accX = accY = 0; Log.W("DRAG start"); }
                     }
@@ -449,10 +450,11 @@ namespace TouchpadOrbit
         {
             var v = ActiveView();
             if (v == null) { accX = accY = accTwist = 0; accPinch = 1; return; }
+            if (inDrawing && !drawLogged) { drawLogged = true; Log.W("drawing view: scale2=" + v.Scale2 + " T[12]=" + v.Transform[12]); }
             if (mode == Mode.Drag || mode == Mode.Pan)
             {
                 if (Math.Abs(accX) < 1e-6 && Math.Abs(accY) < 1e-6) return;
-                bool pan = mode == Mode.Pan || (GetAsyncKeyState(0x11) & 0x8000) != 0;   // tap-hold drag, or Ctrl held -> pan instead of rotate
+                bool pan = mode == Mode.Pan || inDrawing || (GetAsyncKeyState(0x11) & 0x8000) != 0;   // tap-hold drag, or Ctrl held -> pan instead of rotate
                 if (pan != panning) { panning = pan; Log.W(pan ? "PAN" : "ROTATE"); }
                 if (pan) { Pan(v, accX, accY); accX = accY = 0; return; }
                 double k = 1.5 * Math.PI * cfg.RotSpeed;
@@ -539,6 +541,7 @@ namespace TouchpadOrbit
             v.ZoomByFactor(f);
             var b = v.Transform;
             double s2 = b[12], tx2 = b[9], ty2 = b[10];
+            if (s <= 0 || s2 <= 0) return;
             double dx = qx - (s2 / s * (qx - tx) + tx2), dy = qy - (s2 / s * (qy - ty) + ty2);
             if (Math.Abs(dx) < 0.5 && Math.Abs(dy) < 0.5) return;
             double ux = dx / kUnits, uy = -dy / kUnits;
@@ -554,7 +557,9 @@ namespace TouchpadOrbit
         SwView ActiveView()
         {
             object d = Com.Get(sw, "ActiveDoc"); if (d == null) return null;
-            int t = Convert.ToInt32(Com.Call(d, "GetType")); if (t != 1 && t != 2) return null;   // parts & assemblies
+            int t = Convert.ToInt32(Com.Call(d, "GetType")); if (t != 1 && t != 2 && t != 3) return null;   // parts, assemblies & drawings
+            if ((t == 3) != inDrawing) kUnits = 0;          // zoom calibration differs between 3D and drawing views
+            inDrawing = t == 3;
             object v = Com.Get(d, "ActiveView");
             return v == null ? null : new SwView(v);
         }

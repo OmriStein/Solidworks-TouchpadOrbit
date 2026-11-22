@@ -3,13 +3,14 @@
 Lets you rotate, pan, zoom and roll SOLIDWORKS models with a laptop touchpad, the way you would with a mouse's middle button.
 
 ## Gestures
-Over the model in a part or assembly:
+Over the model in a part or assembly (drawings: see the last gesture below):
 
 - **Rotate:** drag with two fingers.
 - **Pan:** tap and hold with two fingers, then drag (or hold **Ctrl** and drag with two). The model moves with your fingers without rotating or changing zoom, like Ctrl + middle-mouse drag.
 - **Zoom:** pinch. It zooms toward the cursor.
 - **Roll:** twist two fingers around each other to turn the model around the axis pointing out of the screen, like Alt + middle-mouse drag.
 - A plain two-finger tap still right-clicks (about 0.35 s later than usual, so the add-in can tell it apart from the start of a pan).
+- **In drawings:** drag with two fingers to pan and pinch to zoom toward the cursor. There is no rotate or roll in 2D.
 - Outside the model (for example in the FeatureManager tree), two-finger scrolling works as normal. A mouse wheel and one-finger drag behave as normal everywhere.
 
 ## Install
@@ -49,12 +50,13 @@ Touchpad Orbit is a regular SOLIDWORKS COM add-in (`src/TouchpadOrbit.cs`). It r
 Requires Visual Studio or Build Tools (for `csc.exe`). SOLIDWORKS isn't needed to build.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build\build.ps1 -Version 1.4.0
+powershell -ExecutionPolicy Bypass -File build\build.ps1 -Version 1.6.0
 ```
 
 This compiles `src\TouchpadOrbit.cs` and regenerates the installers in `dist\` (plus a release zip in `obj\`).
 
 ## Changelog
+- **1.6.0:** Drawings: two-finger drag pans and pinch zooms toward the cursor.
 - **1.5.0:** Tap and hold with two fingers, then drag, now pans (it used to zoom; pinch still zooms).
 - **1.4.0:** Works with any SOLIDWORKS version. The add-in no longer depends on the SOLIDWORKS interop DLLs, which made installation fail on versions other than the one it was built with.
 - **1.3.1:** Updated README (install notes, how it works, changelog). No change in behaviour.
