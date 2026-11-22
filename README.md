@@ -1,9 +1,9 @@
 # Touchpad Orbit for SOLIDWORKS
 
-Lets you rotate, pan, zoom and roll SOLIDWORKS models with a laptop touchpad, the way you would with a mouse's middle button.
+Lets you rotate, pan, zoom and roll SOLIDWORKS models, and pan and zoom drawings, with a laptop touchpad, the way you would with a mouse's middle button.
 
 ## Gestures
-Over the model in a part or assembly (drawings: see the last gesture below):
+Over the model in a part or assembly (for drawings, see **In drawings** below):
 
 - **Rotate:** drag with two fingers.
 - **Pan:** tap and hold with two fingers, then drag (or hold **Ctrl** and drag with two). The model moves with your fingers without rotating or changing zoom, like Ctrl + middle-mouse drag.
@@ -44,7 +44,7 @@ Settings are in the registry under `HKCU\Software\TouchpadOrbit`. Restart SOLIDW
 Requirements: Windows, 64-bit SOLIDWORKS, and a precision touchpad. The same installer works with any SOLIDWORKS version.
 
 ## How it works
-Touchpad Orbit is a regular SOLIDWORKS COM add-in (`src/TouchpadOrbit.cs`). It reads finger positions from the precision touchpad via Windows Raw Input and works out which gesture you're making (drag, pinch, twist, or a tap followed by a hold). It then drives the view through the SOLIDWORKS API (`RotateAboutCenter`, `TranslateBy`, `ZoomByFactor` and `RollBy`). Zooming keeps the point under the cursor fixed. Over the model, it blocks the touchpad's own scroll and right-click messages so they don't interfere, and sends its own right-click for a two-finger tap. It doesn't reference SOLIDWORKS' interop assemblies. It declares the `ISwAddin` interface itself and calls the API late-bound, the same way VBA macros do, so one build works with every SOLIDWORKS version. The installer contains the compiled DLL and registers it with `RegAsm`.
+Touchpad Orbit is a regular SOLIDWORKS COM add-in (`src/TouchpadOrbit.cs`). It reads finger positions from the precision touchpad via Windows Raw Input and works out which gesture you're making (drag, pinch, twist, or a tap followed by a hold). In drawings only pan and zoom apply. It then drives the view through the SOLIDWORKS API (`RotateAboutCenter`, `TranslateBy`, `ZoomByFactor` and `RollBy`). Zooming keeps the point under the cursor fixed. Over the model, it blocks the touchpad's own scroll and right-click messages so they don't interfere, and sends its own right-click for a two-finger tap. It doesn't reference SOLIDWORKS' interop assemblies. It declares the `ISwAddin` interface itself and calls the API late-bound, the same way VBA macros do, so one build works with every SOLIDWORKS version. The installer contains the compiled DLL and registers it with `RegAsm`.
 
 ## Building from source
 Requires Visual Studio or Build Tools (for `csc.exe`). SOLIDWORKS isn't needed to build.
